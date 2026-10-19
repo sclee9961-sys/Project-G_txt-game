@@ -1,0 +1,709 @@
+:root {
+  --bg: #0b0b0c;
+  --fg: #d6d6d6;
+  --dim: #7d7d7d;
+  --faint: #3a3a3a;
+  --bad: #c47474;
+  --good: #93b593;
+  /* 상자·버튼 등 글자가 들어가는 패널의 배경. 반투명(rgba)이면 층 배경 이미지(.floor-scene)가 밝은
+     부분(예: 자료실 쪽지 벽, 조명 근처)을 지날 때 그 아래로 비쳐 보여서 자리마다 진하기가 달라 보였다.
+     그래서 완전히 불투명한 --bg와 같은 색으로 둔다 — 패널은 늘 똑같이 또렷하고, 이미지는 패널 밖
+     여백에서만 보인다. */
+  --panel-bg: var(--bg);
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: 'Times New Roman', 'Batang', 'Noto Serif KR', serif;
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+.game {
+  max-width: 940px;
+  min-height: 100dvh;
+  margin: 0 auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* 시험 중: 표지판을 본 뒤부터 그 층 동안 배경에 흐릿하게 까는 이미지(App.jsx의 floor.scene 참고).
+   어둠 속이라는 느낌을 유지하려고 아주 어둡게 깔고, 위에 글자가 항상 읽히게 opacity도 낮게 둔다. */
+.floor-scene {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* z-index를 일부러 안 둔다: body 배경(var(--bg))이 캔버스에 번져서(propagation) z-index:-1이면
+     그 뒤에 가려져 버린다. 대신 DOM에서 제일 먼저 두고, 뒤따르는 형제 요소들이 자연히 위에 그려지게 한다. */
+  opacity: 0;
+  filter: brightness(0.5) saturate(0.85);
+  pointer-events: none;
+  /* 표지판을 본 순간 짠 하고 뜨지 않고, 서서히 떠오르듯 보이게 한다. 이 요소는 floorKnown이 될 때마다
+     새로 생기는(mount) 것이라, 애니메이션이 매번 처음부터 다시 걸린다. */
+  animation: floor-scene-fade-in 3s ease-out forwards;
+}
+@keyframes floor-scene-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .floor-scene {
+    animation: none;
+    opacity: 0.45;
+  }
+}
+
+/* 지하 4층처럼 "깜빡이는 전등" 같은 층에서만 쓰는 추가 효과(App.jsx의 floor.sceneFlicker 참고).
+   fade-in이 끝난 3초 뒤부터 깜빡임이 이어받는다 — fade-in 쪽은 animation-delay 동안(0~3초) 아무 영향이
+   없으므로(fill-mode 기본값 none) 겹치지 않는다. 일부러 불규칙한 타이밍을 줘서 고장난 형광등처럼 보이게 한다. */
+.floor-scene-flicker {
+  animation:
+    floor-scene-fade-in 3s ease-out forwards,
+    floor-scene-flicker 6s ease-in-out 3s infinite;
+}
+@keyframes floor-scene-flicker {
+  0%,
+  19%,
+  21%,
+  23%,
+  54%,
+  56%,
+  100% {
+    opacity: 0.45;
+    filter: brightness(0.5) saturate(0.85);
+  }
+  20%,
+  55% {
+    opacity: 0.2;
+    filter: brightness(0.25) saturate(0.85);
+  }
+  22% {
+    opacity: 0.55;
+    filter: brightness(0.65) saturate(0.85);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .floor-scene-flicker {
+    animation: none;
+    opacity: 0.45;
+  }
+}
+
+/* 위쪽 줄: 현재 위치(탭) + 작은 메뉴 링크 */
+.topbar {
+  /* .buttons button과 같은 이유로 position이 필요하다: 안 주면 .floor-scene(fixed) 아래에 깔린다. */
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 4px 8px;
+  margin: 0 -8px;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--faint);
+}
+.location-group {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+/* 층 이름 / 방 이름 표지 */
+.location {
+  font-size: 1.05rem;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+}
+/* 방(휴게실·보급실 등) 표지: 층 이름 옆에 붙는 보조 표지라 글자를 살짝 작게 한다 */
+.room-tab {
+  font-size: 0.9rem;
+}
+.menu {
+  display: flex;
+  gap: 14px;
+  padding-bottom: 6px;
+}
+.menu button {
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+}
+.menu button::after {
+  content: '.';
+}
+.menu button:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+/* 게임을 처음 시작할 때(타이틀 / 눈을 뜨는 중): 지문과 선택지를 화면 한가운데에 모아 보여준다 */
+.menu-screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+}
+.menu-screen .log {
+  max-width: 480px;
+  max-height: none;
+  overflow: visible;
+  text-align: center;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+.menu-screen .buttons {
+  width: 100%;
+  max-width: 320px;
+}
+
+/* 위 줄: (상태+설명 세로 열) - (지도+선택지 세로 열) - 소지품 / 아래 줄: 기록(로그).
+   상태-설명, 지도-선택지는 각각 자기 칸 안의 flex 열이라, 다른 칸이 얼마나 길든 그 안의 간격은 항상 같다. */
+.layout {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 210px minmax(0, 1fr) 220px;
+  grid-template-areas:
+    'left map inventory'
+    'log log log';
+  gap: 24px 28px;
+  align-items: start;
+  /* 없으면 .layout이 flex:1로 남는 세로 공간을 채우면서 칸 사이 간격까지 함께 늘어나 버린다 */
+  align-content: start;
+}
+.area-left,
+.area-map {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.area-left {
+  grid-area: left;
+}
+.area-map {
+  grid-area: map;
+}
+.area-inventory {
+  grid-area: inventory;
+}
+.log {
+  grid-area: log;
+  max-height: 68vh;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent);
+}
+/* 수첩: 길어서 끝까지 읽어야 하므로 스크롤되고 흐려지지 않는다 */
+.log.scrollable {
+  overflow-y: auto;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+.log.scrollable:focus-visible {
+  outline: 1px dashed var(--fg);
+  outline-offset: 4px;
+}
+/* 기록: 최근 행동의 결과가 위에 나타나고, 오래된 것일수록 흐려진다 */
+.log .entry {
+  margin-bottom: 16px;
+  opacity: 0.3;
+  animation: appear 0.5s ease-out;
+}
+.log .entry:nth-child(1) {
+  opacity: 1;
+}
+.log .entry:nth-child(2) {
+  opacity: 0.75;
+}
+.log .entry:nth-child(3) {
+  opacity: 0.55;
+}
+.log .entry:nth-child(4) {
+  opacity: 0.4;
+}
+.log p {
+  margin: 0 0 4px;
+  overflow-wrap: anywhere;
+  /* 기록(.log)은 일부러 박스를 안 두고 배경 이미지 위에 그대로 띄우는 영역이라, 글자 자체에
+     어두운 테두리를 입혀서 뒤에 뭐가 지나가든 또렷하게 읽히게 한다(박스 없이도 "불투명"해 보인다). */
+  text-shadow:
+    0 0 3px var(--bg),
+    0 0 6px var(--bg),
+    0 1px 1px var(--bg);
+}
+.log .header {
+  letter-spacing: 0.08em;
+  text-align: center;
+}
+.log .muted {
+  color: var(--dim);
+}
+.log .good {
+  color: var(--good);
+}
+.log .bad {
+  color: var(--bad);
+}
+.log .event {
+  font-style: italic;
+}
+.log .note {
+  font-style: italic;
+}
+
+/* 지도: 상태·소지품과 같은 .box 테두리를 쓰고, 안쪽 글자만 고정폭 그리드로 그린다 */
+.box.map-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.map-grid {
+  margin: 0;
+  font-family: Consolas, 'D2Coding', Menlo, ui-monospace, monospace;
+  font-size: 1rem;
+  line-height: 1.25rem;
+}
+.map-legend {
+  margin: 6px 0 0;
+  color: var(--dim);
+  font-size: 0.8rem;
+}
+.map-legend:first-child {
+  margin-top: 0;
+}
+
+@keyframes appear {
+  from {
+    opacity: 0;
+  }
+}
+
+/* 선택지 버튼: 얇은 테두리만 있는 네모 */
+.buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.buttons button {
+  /* position을 안 주면 "위치 지정 안 된 보통 요소"로 취급돼서, 쌓임 순서상 .floor-scene(fixed)보다
+     항상 먼저(즉 아래에) 그려진다 — .box는 position: relative라 이 문제가 없었다. relative를 줘서
+     .box와 같은 쌓임 단계로 올리면, DOM 순서상 더 뒤에 있는 이 버튼이 이미지 위에 제대로 그려진다. */
+  position: relative;
+  padding: 6px 12px;
+  min-height: 40px;
+  text-align: left;
+  background: var(--panel-bg);
+  border: 1px solid var(--fg);
+  cursor: pointer;
+}
+.buttons button:hover:not(:disabled) {
+  text-decoration: underline;
+}
+.buttons button:disabled {
+  color: var(--dim);
+  border-color: var(--faint);
+  cursor: not-allowed;
+}
+.buttons .key {
+  margin-right: 0.6em;
+  color: var(--dim);
+  font-size: 0.8em;
+}
+.buttons button:focus-visible,
+.menu button:focus-visible {
+  outline: 1px dashed var(--fg);
+  outline-offset: 3px;
+}
+
+/* 단말 접속 창: 입력 칸도 버튼과 같은 얇은 테두리 */
+.terminal label {
+  color: var(--dim);
+  font-size: 0.85rem;
+}
+.terminal input {
+  min-height: 40px;
+  padding: 6px 12px;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--fg);
+  border-radius: 0;
+  font: inherit;
+  font-family: Consolas, 'D2Coding', Menlo, ui-monospace, monospace;
+  letter-spacing: 0.05em;
+}
+.terminal input:focus-visible {
+  outline: 1px dashed var(--fg);
+  outline-offset: 3px;
+}
+
+/* 상자: 테두리 위에 이름표가 걸려 있다 */
+.box {
+  position: relative;
+  margin-bottom: 24px;
+  padding: 14px 12px 8px;
+  background: var(--panel-bg);
+  border: 1px solid var(--fg);
+}
+.box::before {
+  content: attr(data-legend);
+  position: absolute;
+  top: -0.8em;
+  left: 10px;
+  padding: 0 6px;
+  background: var(--panel-bg);
+}
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px 12px;
+}
+.row.warn {
+  color: var(--bad);
+}
+/* 이름·장비 설명이 길면(예: "전기 충격봉 (장착)") 칸을 벗어나지 않고 안에서 줄바꿈한다 */
+.row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.row > span:last-child {
+  text-align: right;
+}
+
+.hint {
+  color: var(--dim);
+  font-size: 0.8rem;
+  text-shadow:
+    0 0 3px var(--bg),
+    0 0 6px var(--bg),
+    0 1px 1px var(--bg);
+}
+
+/* 테스트용 층 이동 바. 눈에 띄게 배포 UI와 다르게 보이도록 점선 테두리를 둔다. */
+.dev-jump {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--faint);
+}
+.dev-jump button {
+  /* .buttons button과 같은 이유: .floor-scene(fixed) 위에 제대로 그려지려면 position이 필요하다. */
+  position: relative;
+  padding: 2px 8px;
+  background: var(--panel-bg);
+  border: 1px dashed var(--dim);
+  border-radius: 3px;
+  color: var(--dim);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.dev-jump button:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--fg);
+}
+.dev-jump button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 테스트용: 개발 전용 화면(전체화면 연출 등)을 강제로 닫는 탈출구. 실제 게임 흐름에는 없다. */
+.dev-exit {
+  position: fixed;
+  top: 8px;
+  right: 8px;
+  z-index: 300;
+  padding: 2px 8px;
+  background: var(--bg);
+  border: 1px dashed var(--dim);
+  border-radius: 3px;
+  color: var(--dim);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.dev-exit:hover {
+  color: var(--fg);
+  border-color: var(--fg);
+}
+
+/* 테스트용: COMPUTER 방 장면 그림. 화면 폭에 맞춰 보여준다. */
+.scene {
+  min-height: 100vh;
+  padding: 16px;
+  box-sizing: border-box;
+  background: #0b0d10;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  overflow: hidden;
+}
+/* 그림(1200:896)이 창 높이 안에 다 들어오도록 폭을 높이에 맞춰 제한한다 */
+.scene-frame {
+  position: relative;
+  width: min(100%, 1200px, calc((100vh - 32px) * 1200 / 896));
+}
+.scene-image {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+/* 밝은 방·열린 리더기 그림은 어두운 그림 위에 겹쳐 투명도로 켜고 끈다 */
+.scene-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  transition: opacity 1.2s ease;
+  pointer-events: none;
+}
+.scene-layer.is-on {
+  opacity: 1;
+}
+/* 조명 깜빡임: 어두운 막의 투명도를 불규칙하게 올렸다 내린다(끊기고 다시 붙는 느낌을 위해 간격을 일부러 어긋나게 둔다) */
+.scene-flicker {
+  position: absolute;
+  inset: 0;
+  background: #05070a;
+  opacity: 0;
+  pointer-events: none;
+}
+.scene-flicker.is-on {
+  animation: scene-flicker 6s linear infinite;
+}
+@keyframes scene-flicker {
+  0%, 5% { opacity: 0; }
+  6% { opacity: 0.75; }
+  8% { opacity: 0; }
+  9% { opacity: 0.4; }
+  10% { opacity: 0; }
+  40%, 62% { opacity: 0; }
+  63% { opacity: 0.6; }
+  64% { opacity: 0.1; }
+  66% { opacity: 0; }
+  86% { opacity: 0; }
+  87% { opacity: 0.85; }
+  88% { opacity: 0; }
+  100% { opacity: 0; }
+}
+.scene-approach {
+  position: absolute;
+  left: 50%;
+  bottom: 6%;
+  transform: translateX(-50%);
+  padding: 8px 18px;
+  background: rgba(11, 13, 16, 0.75);
+  border: 1px solid #7d7d7d;
+  border-radius: 3px;
+  color: #d6d6d6;
+  font: inherit;
+  cursor: pointer;
+}
+.scene-approach:hover {
+  border-color: #d6d6d6;
+}
+
+/* 다가감: 프레임 전체를 모니터 중심(가로 50%, 세로 47%)을 기준으로 확대한다.
+   (1.6배로 키우면 그림이 원래 해상도보다 커져서 약간 흐려진다 — 흐림이 거슬리면 배율을 낮춘다) */
+.scene-frame {
+  transition: transform 1.2s ease;
+  transform-origin: 50% 47%;
+}
+.scene-frame.is-zoomed {
+  transform: scale(1.6);
+}
+
+/* 모니터 초록 화면 위치에 깔리는 터미널. 글자 크기는 화면 폭(cqw) 기준이라 확대돼도 화면 안에 맞는다. */
+.scene-terminal {
+  position: absolute;
+  left: 33.9%;
+  top: 30.2%;
+  width: 32.1%;
+  height: 33.4%;
+  container-type: inline-size;
+  /* 살짝 투명하게 해서 검은 화면의 유리 반사가 비쳐 보이게 한다 */
+  background: rgba(2, 8, 10, 0.9);
+  overflow: hidden;
+  transition: opacity 0.6s ease;
+}
+.scene-terminal.is-leaving {
+  opacity: 0;
+}
+/* 실제 내용물. 글자와 여백 크기는 바깥 터미널 폭(cqw) 기준이라, 화면이 확대돼도 화면 안에 그대로 맞는다. */
+.scene-terminal-inner {
+  box-sizing: border-box;
+  height: 100%;
+  padding: 3cqw;
+  display: flex;
+  flex-direction: column;
+  gap: 2cqw;
+  color: #7dff9a;
+  font-family: 'Consolas', 'D2Coding', monospace;
+  font-size: 4.2cqw;
+  line-height: 1.5;
+}
+.scene-terminal-log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* 스크롤바도 화면 색에 맞춰 보이게 (Firefox / Chromium 계열 둘 다) */
+  scrollbar-width: thin;
+  scrollbar-color: #2f8f4c #02080a;
+}
+.scene-terminal-log::-webkit-scrollbar {
+  width: 6px;
+}
+.scene-terminal-log::-webkit-scrollbar-track {
+  background: #02080a;
+}
+.scene-terminal-log::-webkit-scrollbar-thumb {
+  background: #2f8f4c;
+  border-radius: 3px;
+}
+.scene-terminal-log p {
+  margin: 0 0 1cqw;
+}
+.scene-terminal-log b {
+  font-weight: normal;
+  color: #d6ffe0;
+}
+.scene-you {
+  color: #ffd27d;
+}
+.scene-cursor {
+  animation: scene-blink 1s steps(1) infinite;
+}
+@keyframes scene-blink {
+  50% { opacity: 0; }
+}
+.scene-terminal-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 1cqw;
+  margin-top: 1cqw;
+}
+.scene-terminal-choices button {
+  padding: 1.2cqw 2cqw;
+  background: #02080a;
+  border: 1px solid #7dff9a;
+  color: #7dff9a;
+  font: inherit;
+  font-size: 3.6cqw;
+  text-align: left;
+  cursor: pointer;
+}
+.scene-terminal-choices button:hover {
+  background: #0c1f14;
+}
+.scene-terminal-message .scene-terminal-inner {
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  font-size: 5cqw;
+  letter-spacing: 0.04em;
+}
+.scene-terminal-message p {
+  margin: 0;
+}
+
+/* 결말 가림막: 파괴는 짧게 깜빡이며 꺼지고, 자살은 천천히 어두워진다. 꺼진 뒤엔 계속 검은 화면. */
+.scene-black {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 2.2s ease;
+}
+.scene-black.is-fading {
+  opacity: 1;
+}
+.scene-black.is-breaking {
+  transition: none;
+  animation: scene-break 0.5s linear forwards;
+}
+.scene-black.is-off {
+  opacity: 1;
+  transition: none;
+}
+@keyframes scene-break {
+  0% { opacity: 0; }
+  20% { opacity: 1; }
+  40% { opacity: 0; }
+  60% { opacity: 1; }
+  100% { opacity: 1; }
+}
+.scene-reset {
+  padding: 8px 18px;
+  background: transparent;
+  border: 1px dashed #7d7d7d;
+  border-radius: 3px;
+  color: #d6d6d6;
+  font: inherit;
+  cursor: pointer;
+}
+.scene-drive-hit {
+  position: absolute;
+  left: 70.5%;
+  top: 67.5%;
+  width: 16.5%;
+  height: 16.5%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+/* 좁은 화면: 지도(+선택지, 또는 적) → (상태+설명)·소지품(나란히) → 기록 순서로 세로 배치 */
+@media (max-width: 720px) {
+  .layout {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      'map map'
+      'left inventory'
+      'log log';
+    gap: 20px 16px;
+  }
+  .log {
+    max-height: 32vh;
+  }
+  .box {
+    margin-bottom: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .log .entry {
+    animation: none;
+  }
+}
