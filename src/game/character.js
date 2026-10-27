@@ -98,7 +98,8 @@ export function createPlayer(rng = Math.random) {
     rests: config.restsPerFloor, // 이 층에서 남은 휴식 횟수
     steps: 0, // 지금까지 걸은 총 걸음 수
     dangerStreak: 0, // 마지막으로 적과 마주친 뒤 걸은 걸음 수. 늘어날수록 다음 걸음에 적과 마주칠 확률이 오른다.
-    branchReturn: null, // 별관(wing)에 들어가 있는 동안, 돌아갈 층·자리를 기억해 둔다: { floor, progress }
+    // 층마다 가장 멀리 나아간 칸: { [층 번호]: progress }. 되돌아온 층에서 지도·이정표·빠른 이동에 쓴다(moveTo 참고).
+    reached: { 0: 0 },
     // 이번 판에 쓸, 무작위로 재배치된 지도 레이아웃. createPlayer()는 여기서 만들지 않고 null로 둔다 — 실제
     // "새로 시작" 흐름(useGame.js의 startRun)에서만 generateMapLayout()으로 채운다. mapgen.js의 getFloor 참고.
     mapLayout: null,
@@ -116,6 +117,29 @@ export function createPlayer(rng = Math.random) {
     equipped: { weapon: null, armor: null }, // 지금 장착한 무기·방어구의 id. 얻는다고 곧장 장착되지는 않는다.
     equippedAugs: [], // 지금 장착 중인 이식(aug)들의 id 목록. 무기·방어구와 달리 여러 개를 동시에 장착할 수 있다.
   }
+}
+
+// 지금 층에서 가장 멀리 나아간 칸을 갱신한다. progress가 늘어나는 곳(걸음, 층 이동)마다 거친다.
+export function markReached(player) {
+  const best = Math.max(player.reached[player.floor] ?? 0, player.progress)
+  return { ...player, reached: { ...player.reached, [player.floor]: best } }
+}
+
+// 그 층의 이정표를 이미 지나갔는지. 다시 찾아온 층이면 몇 층·어디인지 이미 안다.
+const knowsFloor = (player, floorIndex) => (player.reached[floorIndex] ?? -1) >= floors[floorIndex].sign.at
+
+// 다른 층(계단 위·아래, 별관 문 너머)으로 옮겨 간다. 처음 오는 층이면 휴식 횟수를 채우고 이정표를 새로 찾아야 하지만,
+// 다시 찾아온 층이면 휴식 횟수는 그대로 두고(계단을 오르내리며 휴식을 채우는 것을 막는다) 이정표도 이미 안다.
+export function moveTo(player, floorIndex, progress) {
+  const firstVisit = player.reached[floorIndex] == null
+  return markReached({
+    ...player,
+    floor: floorIndex,
+    progress,
+    dangerStreak: 0,
+    rests: firstVisit ? config.restsPerFloor : player.rests,
+    floorKnown: knowsFloor(player, floorIndex),
+  })
 }
 
 export function spawnEnemy(id) {
@@ -229,18 +253,32 @@ export function restorePlayer(d) {
     return Object.keys(result).length ? result : null
   })()
 
-  // 별관에 들어가 있던 기록. 돌아갈 층·자리가 지금도 유효해야(그 층이 실제로 있고 자리도 범위 안이어야) 유지한다.
-  const branchReturn = (() => {
-    const b = d.branchReturn
-    if (!b || typeof b !== 'object') return null
-    if (!Number.isInteger(b.floor) || b.floor < 0 || b.floor >= floors.length) return null
-    if (!Number.isFinite(b.progress)) return null
-    return { floor: b.floor, progress: clamp(Math.floor(b.progress), 0, floors[b.floor].length) }
+  const progress = clamp(Math.floor(d.progress), 0, floors[d.floor].length)
+
+  // 층마다 가장 멀리 나아간 칸. 이 기능이 생기기 전 저장 데이터는, 지금 층보다 아래 본편 층은 끝까지 다녀온 것으로 친다.
+  const reached = (() => {
+    const result = {}
+    if (d.reached && typeof d.reached === 'object') {
+      for (const [key, value] of Object.entries(d.reached)) {
+        const floor = floors[Number(key)]
+        if (floor && Number.isInteger(value) && value >= 0) result[Number(key)] = Math.min(value, floor.length)
+      }
+    } else if (floors[d.floor].wing) {
+      // 별관에 있었다면 별관으로 갈라지는 본편 층(지하 4층)과 허브(동쪽 별관)까지는 다녀온 것으로 친다.
+      const branchFloor = floors.findIndex((f) => !f.wing && f.rooms.some((r) => r.kind === 'wing'))
+      const hub = floors[branchFloor].rooms.find((r) => r.kind === 'wing').enterFloor
+      for (let i = 0; i <= branchFloor; i += 1) result[i] = floors[i].length
+      result[hub] = floors[hub].length
+    } else {
+      for (let i = 0; i < d.floor; i += 1) result[i] = floors[i].length
+    }
+    result[d.floor] = Math.max(result[d.floor] ?? 0, progress)
+    return result
   })()
 
   return {
     floor: d.floor,
-    progress: clamp(Math.floor(d.progress), 0, floors[d.floor].length),
+    progress,
     hp: clamp(d.hp, 1, d.maxHp),
     maxHp: d.maxHp,
     light: clamp(d.light, 0, maxLightOf({ lightLevel })),
@@ -249,7 +287,7 @@ export function restorePlayer(d) {
     dangerStreak: count(d.dangerStreak, 0),
     passwords,
     mapLayout,
-    branchReturn,
+    reached,
     deaths: count(d.deaths, 0),
     bagLevel: count(d.bagLevel, 0),
     lightLevel,

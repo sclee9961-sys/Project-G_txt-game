@@ -24,8 +24,24 @@ import {
 } from './character.js'
 import { config } from './config.js'
 import { enemies, floors, items, roomKinds } from './data.js'
-import { arrivalLog, atExit, climb, floorLogs, isFinalFloor, rest, retreat, returnFromWing, sightLogs, step } from './explore.js'
-import { atGate, tryGate } from './gate.js'
+import {
+  arrivalLog,
+  atExit,
+  backtrack,
+  canDescend,
+  climb,
+  descend,
+  floorLogs,
+  furthest,
+  isFinalFloor,
+  rest,
+  retreat,
+  returnFromWing,
+  sightLogs,
+  step,
+  wingEntrance,
+} from './explore.js'
+import { atGate, tryGate, tryKeyGate } from './gate.js'
 import { upgradeBag, upgradeLight, usableItems, useItem, visibleInventory } from './items.js'
 import { buildMap, mapGridSize, mapLegend, mapView, mapViewSize, pathCells, roomCell, viewOrigin } from './map.js'
 import { generateMapLayout, getFloor } from './mapgen.js'
@@ -148,7 +164,9 @@ describe('data', () => {
           expect(room.notes.length).toBeGreaterThan(0)
         }
         if (room.kind === 'wing') {
-          expect(Number.isInteger(room.passwordIndex)).toBe(true)
+          // 비밀번호(passwordIndex)나 진행 열쇠(key) 중 하나로 연다.
+          if (room.key) expect(items[room.key]?.type).toBe('key')
+          else expect(Number.isInteger(room.passwordIndex)).toBe(true)
           expect(Number.isInteger(room.enterFloor)).toBe(true)
           expect(floors[room.enterFloor]).toBeDefined()
           expect(room.openText.length).toBeGreaterThan(0)
@@ -720,13 +738,22 @@ describe('wing', () => {
     expect(wingSpots).toHaveLength(4)
   })
 
-  it.each(wingSpots)('별관 통로 비밀번호는 같은 층의 자료실 쪽지에 적혀 있다 ($room.name)', ({ floorIndex, room }) => {
+  // 비밀번호로 여는 통로(동/서/남)와 열쇠로 여는 통로(북)
+  const passwordSpots = wingSpots.filter(({ room }) => !room.key)
+  const keySpots = wingSpots.filter(({ room }) => room.key)
+
+  it('별관 통로 중 북쪽만 열쇠(격납고 출입증)로 열린다', () => {
+    expect(keySpots.map(({ room }) => room.key)).toEqual(['hangarPass'])
+    expect(passwordSpots).toHaveLength(3)
+  })
+
+  it.each(passwordSpots)('별관 통로 비밀번호는 같은 층의 자료실 쪽지에 적혀 있다 ($room.name)', ({ floorIndex, room }) => {
     const archive = floors[floorIndex].rooms.find((r) => r.kind === 'archive')
     const p = { ...createPlayer(), passwords: FIXED_PASSWORDS, floor: floorIndex, progress: 0 }
     expect(fillNote(archive.notes.join(' '), p)).toContain(FIXED_PASSWORDS[room.passwordIndex])
   })
 
-  it.each(wingSpots)(
+  it.each(passwordSpots)(
     'openWing: 비밀번호가 틀리면 체력이 깎이고, 방은 그대로 남아 있어 다시 시도할 수 있다 ($room.name)',
     ({ floorIndex, room }) => {
       const wingIndex = floors[floorIndex].rooms.indexOf(room)
@@ -739,8 +766,8 @@ describe('wing', () => {
     },
   )
 
-  it.each(wingSpots)(
-    'openWing: 비밀번호가 맞으면 별관으로 곧장 넘어가고, 돌아올 자리를 기억해 둔다 ($room.name)',
+  it.each(passwordSpots)(
+    'openWing: 비밀번호가 맞으면 별관으로 곧장 넘어가고, 문은 연 것으로 기록된다 ($room.name)',
     ({ floorIndex, room }) => {
       const wingIndex = floors[floorIndex].rooms.indexOf(room)
       const p = { ...createPlayer(), passwords: FIXED_PASSWORDS, floor: floorIndex, progress: room.at }
@@ -749,10 +776,40 @@ describe('wing', () => {
       expect(r.player.floor).toBe(room.enterFloor)
       expect(r.player.progress).toBe(0)
       expect(r.player.floorKnown).toBe(false)
-      expect(r.player.branchReturn).toEqual({ floor: floorIndex, progress: room.at })
+      expect(r.player.reached[room.enterFloor]).toBe(0)
       expect(r.player.visited).toContain(`${floorIndex}:${wingIndex}`)
     },
   )
+
+  it.each(wingSpots)('한 번 연 별관 통로는 계속 열려 있어, 빛을 들이지 않고 곧장 다시 들어간다 ($room.name)', ({ floorIndex, room }) => {
+    const wingIndex = floors[floorIndex].rooms.indexOf(room)
+    const p = { ...createPlayer(), floor: floorIndex, progress: room.at, visited: [`${floorIndex}:${wingIndex}`] }
+    expect(availableRooms(p).map((r) => r.index)).toContain(wingIndex)
+    expect(doorLogs(p).some((l) => l.text.includes(room.name))).toBe(false) // 이미 연 문은 다시 알리지 않는다
+    const r = enterRoom(p, wingIndex)
+    expect(r.travel).toBe(true)
+    expect(r.player.floor).toBe(room.enterFloor)
+    expect(r.player.progress).toBe(0)
+    expect(r.player.light).toBe(p.light)
+  })
+
+  it.each(keySpots)('열쇠로 여는 별관 통로: 열쇠가 없으면 문 앞에서 돌아서고, 있으면 곧장 열고 들어간다 ($room.name)', ({ floorIndex, room }) => {
+    const wingIndex = floors[floorIndex].rooms.indexOf(room)
+    const p = { ...createPlayer(), floor: floorIndex, progress: room.at }
+    const locked = enterRoom(p, wingIndex)
+    expect(locked.travel).toBeUndefined()
+    expect(locked.wing).toBeUndefined() // 비밀번호 화면으로 가지 않는다
+    expect(locked.player.floor).toBe(floorIndex)
+    expect(locked.player.visited).toEqual([])
+    expect(locked.logs.some((l) => l.text.includes('출입증이 있어야'))).toBe(true)
+    expect(openWing(p, wingIndex, FIXED_PASSWORDS[4]).ok).toBe(false) // 비밀번호로는 열 수 없다
+
+    const opened = enterRoom({ ...p, inventory: { ...p.inventory, [room.key]: 1 } }, wingIndex)
+    expect(opened.travel).toBe(true)
+    expect(opened.player.floor).toBe(room.enterFloor)
+    expect(opened.player.visited).toContain(`${floorIndex}:${wingIndex}`)
+    expect(opened.player.inventory[room.key]).toBe(1) // 열쇠는 쓰여 없어지지 않는다
+  })
 
   it.each(wingSpots)('별관 층은 wing으로 표시되어 있고, isFinalFloor는 아니다 ($room.name)', ({ room }) => {
     expect(floors[room.enterFloor].wing).toBe(true)
@@ -760,21 +817,173 @@ describe('wing', () => {
   })
 
   it.each(wingSpots)(
-    'returnFromWing: 별관 끝에서 branchReturn이 가리키는 원래 층·자리로 돌아온다 ($room.name)',
+    'returnFromWing: 별관의 끝이나 입구에서, 그 별관으로 들어온 문 앞으로 돌아온다 ($room.name)',
     ({ floorIndex, room }) => {
-      const inWing = {
-        ...createPlayer(),
-        floor: room.enterFloor,
-        progress: floors[room.enterFloor].length,
-        branchReturn: { floor: floorIndex, progress: room.at },
+      expect(wingEntrance(room.enterFloor)).toEqual({ floor: floorIndex, roomIndex: floors[floorIndex].rooms.indexOf(room) })
+      const reached = { [floorIndex]: room.at, [room.enterFloor]: floors[room.enterFloor].length }
+      for (const progress of [floors[room.enterFloor].length, 0]) {
+        const r = returnFromWing({ ...createPlayer(), floor: room.enterFloor, progress, reached })
+        expect(r.player.floor).toBe(floorIndex)
+        expect(r.player.progress).toBe(room.at)
+        expect(r.player.floorKnown).toBe(true) // 이정표를 이미 지나온 층이다
       }
-      const r = returnFromWing(inWing)
-      expect(r.player.floor).toBe(floorIndex)
-      expect(r.player.progress).toBe(room.at)
-      expect(r.player.branchReturn).toBeNull()
-      expect(r.player.floorKnown).toBe(true)
     },
   )
+
+  it('보안실에서 하위 별관을 다녀온 뒤에도, 보안실 끝에서 지하 4층으로 돌아갈 수 있다', () => {
+    const [hubDoor] = wingSpots
+    const hub = hubDoor.room.enterFloor
+    const westDoor = floors[hub].rooms.find((r) => r.enterFloor === 11)
+    const reached = { [hubDoor.floorIndex]: hubDoor.room.at, [hub]: westDoor.at, 11: floors[11].length }
+    const backInHub = returnFromWing({ ...createPlayer(), floor: 11, progress: floors[11].length, reached }).player
+    expect(backInHub.floor).toBe(hub)
+    expect(backInHub.progress).toBe(westDoor.at)
+
+    const atHubEnd = { ...backInHub, progress: floors[hub].length }
+    const r = returnFromWing(atHubEnd)
+    expect(r.player.floor).toBe(hubDoor.floorIndex)
+    expect(r.player.progress).toBe(hubDoor.room.at)
+  })
+})
+
+describe('되돌아가기 (메트로베니아)', () => {
+  const at = (floor, progress, extra = {}) => ({ ...createPlayer(), floor, progress, ...extra })
+
+  it('계단 입구(0칸)에서 아래층으로 내려가면, 아래층의 위로 오르는 계단 앞(끝 칸)에 선다', () => {
+    const p = at(3, 0, { reached: { 0: floors[0].length, 1: floors[1].length, 2: floors[2].length, 3: 0 }, rests: 0 })
+    expect(canDescend(p)).toBe(true)
+    const r = descend(p)
+    expect(r.player.floor).toBe(2)
+    expect(r.player.progress).toBe(floors[2].length)
+    expect(atExit(r.player)).toBe(true)
+    expect(r.player.floorKnown).toBe(true) // 이미 지나온 층이라 이정표를 다시 찾지 않는다
+    expect(r.player.rests).toBe(0) // 다시 찾아온 층에서는 휴식 횟수가 채워지지 않는다
+    expect(r.logs.some((l) => l.text === `— ${floors[2].name} · ${floors[2].place} —`)).toBe(true)
+  })
+
+  it('지하 10층 입구, 계단 중간, 별관 입구에서는 내려갈 수 없다', () => {
+    expect(canDescend(at(0, 0))).toBe(false)
+    expect(canDescend(at(3, 1))).toBe(false)
+    expect(canDescend(at(10, 0))).toBe(false)
+    expect(descend(at(0, 0)).player.floor).toBe(0)
+  })
+
+  it('climb: 처음 오르는 층은 이정표를 찾아야 하고 휴식이 채워지지만, 다시 오르는 층은 그대로다', () => {
+    const fresh = climb(at(0, floors[0].length, { rests: 0, reached: { 0: floors[0].length } })).player
+    expect(fresh.floorKnown).toBe(false)
+    expect(fresh.rests).toBe(config.restsPerFloor)
+    expect(fresh.reached[1]).toBe(0)
+
+    const again = climb(at(0, floors[0].length, { rests: 0, reached: { 0: floors[0].length, 1: 10 } })).player
+    expect(again.floorKnown).toBe(true)
+    expect(again.rests).toBe(0)
+    expect(again.reached[1]).toBe(10) // 가장 멀리 갔던 기록은 지워지지 않는다
+  })
+
+  it('step은 그 층에서 가장 멀리 나아간 칸(reached)을 갱신하고, 물러나도 줄지 않는다', () => {
+    const walked = step(at(0, 5, { reached: { 0: 5 } }), NOTHING).player
+    expect(walked.reached[0]).toBe(6)
+    expect(retreat(walked).player.reached[0]).toBe(6)
+  })
+
+  it('backtrack: 지나온 길은 사건·빛 소모 없이 입구까지, 또는 가장 멀리 갔던 곳까지 한 번에 오간다', () => {
+    const p = at(1, 12, { reached: { 0: floors[0].length, 1: 20 } })
+    const back = backtrack(p, 0).player
+    expect(back.progress).toBe(0)
+    expect(back.light).toBe(p.light)
+    expect(back.steps).toBe(p.steps)
+    expect(furthest(back)).toBe(20)
+    const forward = backtrack(back, furthest(back)).player
+    expect(forward.progress).toBe(20)
+    expect(backtrack(p, 99).player.progress).toBe(20) // 가 본 적 없는 곳으로는 건너뛰지 못한다
+  })
+
+  it('지도는 물러나도, 다른 층에 다녀와도 가장 멀리 갔던 곳까지 계속 그린다', () => {
+    const far = at(0, 10, { reached: { 0: 10 } })
+    const back = { ...far, progress: 0 }
+    const count = (lines) => lines.join('').replace(/[ ]/g, '').length
+    expect(count(buildMap(back))).toBe(count(buildMap(far)))
+  })
+
+  it('세이브에 reached가 없으면(옛 저장), 지금 층보다 아래 본편 층은 끝까지 다녀온 것으로 친다', () => {
+    const restored = restorePlayer({ ...createPlayer(), floor: 3, progress: 4, reached: undefined })
+    expect(restored.reached).toEqual({ 0: floors[0].length, 1: floors[1].length, 2: floors[2].length, 3: 4 })
+    const inWing = restorePlayer({ ...createPlayer(), floor: 11, progress: 2, reached: undefined })
+    expect(inWing.reached[6]).toBe(floors[6].length) // 별관으로 갈라지는 지하 4층
+    expect(inWing.reached[10]).toBe(floors[10].length) // 허브인 동쪽 별관
+    expect(inWing.reached[11]).toBe(2)
+  })
+})
+
+describe('진행 열쇠와 열쇠 문', () => {
+  const keyGateFloors = floors.map((f, i) => ({ f, i })).filter(({ f }) => f.gate?.key)
+  const at = (floor, progress, extra = {}) => ({ ...createPlayer(), floor, progress, ...extra })
+  const holder = (id) => floors.findIndex((f) => f.finds.some((find) => find.item === id))
+
+  it('열쇠 문은 지하 2층(절단기), 지하 1층(출구 제어 키), 북쪽 별관(신호 해독기)에 있다', () => {
+    expect(keyGateFloors.map(({ f }) => [f.name, f.gate.key])).toEqual([
+      ['지하 2층', 'cutter'],
+      ['지하 1층', 'exitKey'],
+      ['북쪽 별관', 'decoder'],
+    ])
+  })
+
+  it('열쇠는 모두 어딘가에서 반드시 얻고(finds), 열쇠 문보다 앞이거나 다른 층에 있다', () => {
+    for (const id of Object.keys(items).filter((k) => items[k].type === 'key')) {
+      const fi = holder(id)
+      expect(fi).not.toBe(-1)
+      const gate = floors[fi].gate
+      const find = floors[fi].finds.find((f) => f.item === id)
+      if (gate?.key === id) expect(find.at).toBeLessThan(gate.at)
+    }
+    // 메트로베니아 순서: 서·남쪽 별관 → 지하 2층(절단기로 연 너머에 출입증) → 북쪽 별관 → 지하 1층
+    expect(floors[holder('cutter')].name).toBe('서쪽 별관')
+    expect(floors[holder('decoder')].name).toBe('남쪽 별관')
+    expect(floors[holder('hangarPass')].name).toBe('지하 2층')
+    expect(floors[holder('hangarPass')].finds[0].at).toBeGreaterThan(floors[holder('hangarPass')].gate.at)
+    expect(floors[holder('exitKey')].name).toBe('북쪽 별관')
+  })
+
+  it('열쇠는 소지품 용량을 차지하지 않고, 쓸 수 있는 소모품으로도 나오지 않는다', () => {
+    const p = at(0, 0, { inventory: { cutter: 1, decoder: 1 } })
+    expect(carriedCount(p)).toBe(0)
+    expect(usableItems(p)).toEqual([])
+    expect(visibleInventory(p).map((i) => i.id)).toEqual(['cutter', 'decoder'])
+  })
+
+  it.each(keyGateFloors)('tryKeyGate: 열쇠가 없으면 열리지 않고(페널티 없음), 있으면 열린다 ($f.name)', ({ f, i }) => {
+    const p = at(i, f.gate.at - 1, { hp: 20 })
+    expect(atGate(p)).toBe(true)
+    const locked = tryKeyGate(p)
+    expect(locked.ok).toBe(false)
+    expect(locked.player.hp).toBe(20)
+    expect(tryGate(p, '0000').ok).toBe(false) // 비밀번호 입력으로는 열 수 없다
+
+    const opened = tryKeyGate({ ...p, inventory: { ...p.inventory, [f.gate.key]: 1 } })
+    expect(opened.ok).toBe(true)
+    expect(atGate(opened.player)).toBe(false)
+    expect(step(opened.player, NOTHING).player.progress).toBe(f.gate.at)
+  })
+
+  it('지하 1층 출구는 출구 제어 키로 격벽을 열어야 닿을 수 있다', () => {
+    const final = floors.findIndex((f) => f.final)
+    const p = at(final, floors[final].gate.at - 1)
+    expect(step(p, NOTHING).player.progress).toBe(p.progress) // 격벽에 막힌다
+  })
+
+  it('무작위 지도에서도 열쇠 문의 위치와 방의 앞뒤 관계가 지켜진다', () => {
+    let seed = 7
+    const rng = () => {
+      seed = (seed * 16807) % 2147483647
+      return (seed - 1) / 2147483646
+    }
+    const layout = generateMapLayout(rng)
+    for (const { f, i } of keyGateFloors) {
+      const generated = layout[i]
+      expect(generated).toBeDefined()
+      generated.rooms.forEach((r) => expect(r.at).not.toBe(f.gate.at))
+    }
+  })
 })
 
 describe('map', () => {
@@ -1345,7 +1554,17 @@ describe('save', () => {
 
   it('저장 후 불러오면 같은 플레이어가 복원된다', () => {
     stubStorage()
-    const p = { ...createPlayer(), floor: 2, progress: 3, deaths: 1, steps: 40, hp: 33, visited: ['0:0', '1:0'], notebook: ['2:0:0', '2:0:1'] }
+    const p = {
+      ...createPlayer(),
+      floor: 2,
+      progress: 3,
+      reached: { 0: floors[0].length, 1: floors[1].length, 2: 3 },
+      deaths: 1,
+      steps: 40,
+      hp: 33,
+      visited: ['0:0', '1:0'],
+      notebook: ['2:0:0', '2:0:1'],
+    }
     expect(hasSave()).toBe(false)
     expect(saveGame(p)).toBe(true)
     expect(hasSave()).toBe(true)
@@ -1440,6 +1659,30 @@ describe('mapgen', () => {
 
   it('여러 번 생성해도 매번 자기 자신과 안 겹치는 복도와, 힌트→잠금 순서를 지키는 방 배치가 나온다', () => {
     for (let trial = 0; trial < 15; trial += 1) expectValidLayout(generateMapLayout())
+  })
+
+  // 지도는 칸 단위라 맞닿은 두 칸 사이에 벽을 그릴 수 없다. 맞닿으면 실제로는 갈 수 없는 길이 이어진 것처럼 보인다.
+  it('생성된 지도에는 갈 수 없는데 이어져 보이는 칸(복도끼리, 방과 남의 복도·방)이 없고, 모든 층이 생성에 성공한다', () => {
+    const touches = (a, b) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y) === 1
+    for (let trial = 0; trial < 15; trial += 1) {
+      const layout = generateMapLayout()
+      floors.forEach((floor, fi) => {
+        expect(layout[fi], `${floor.name} 생성 실패`).toBeDefined()
+        const cells = pathCells(layout[fi].path)
+        for (let i = 0; i < cells.length; i += 1) {
+          for (let j = i + 2; j < cells.length; j += 1) expect(touches(cells[i], cells[j]), `${floor.name} ${i}↔${j}칸`).toBe(false)
+        }
+        const roomCells = layout[fi].rooms.map((r) => roomCell(cells, r))
+        layout[fi].rooms.forEach((r, ri) => {
+          cells.forEach((c, ci) => {
+            if (ci !== r.at) expect(touches(roomCells[ri], c), `${floor.name} 방${ri}↔${ci}칸`).toBe(false)
+          })
+          roomCells.forEach((other, oi) => {
+            if (oi !== ri) expect(touches(roomCells[ri], other), `${floor.name} 방${ri}↔방${oi}`).toBe(false)
+          })
+        })
+      })
+    }
   })
 
   it('방 배열의 길이와 순서(인덱스)는 바뀌지 않는다 — at/dir 값만 다시 뽑힌다', () => {

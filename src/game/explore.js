@@ -1,6 +1,6 @@
 // 미궁 탐색 로직: 한 걸음 나아가기 / 쉬기 / 계단 오르기. 모두 새 player와 로그를 반환한다.
 // 반환값: { player, logs: [{ text, type }], enemy: null | 마주친 적 }
-import { addItem, gain, heal, itemCount, spawnFloorEnemy } from './character.js'
+import { addItem, gain, heal, itemCount, markReached, moveTo, spawnFloorEnemy } from './character.js'
 import { config } from './config.js'
 import { floors, items as itemData } from './data.js'
 import { atGate, gateAnnounce } from './gate.js'
@@ -124,6 +124,7 @@ export function step(player, rng = Math.random) {
       logs.push(log(pick(floor.ambient, rng), 'muted'))
   }
 
+  p = markReached(p)
   if (!enemy) logs.push(...sightLogs(p))
   return { player: p, logs, enemy, foundGear }
 }
@@ -150,22 +151,47 @@ export function retreat(player) {
   return { player: p, logs: [log('왔던 길을 되짚어 한 걸음 물러났다.', 'muted'), ...sightLogs(p)], enemy: null }
 }
 
-// 별관 끝에 다다라 원래 층의 그 방 자리로 돌아간다. 원래 층은 이미 다녀온 곳이라 이정표를 다시 찾지 않는다.
-export function returnFromWing(player) {
-  const back = player.branchReturn
-  const next = { ...player, floor: back.floor, progress: back.progress, branchReturn: null, floorKnown: true }
-  return { player: next, logs: [log('온 길을 되짚어 돌아왔다.', 'muted'), ...sightLogs(next)], enemy: null }
+// 빠른 되짚기: 이미 지나온 칸 사이는 사건 없이, 빛도 들이지 않고 한 번에 오간다(retreat를 여러 번 한 것과 같다).
+// 입구(0)까지 물러나거나, 이 층에서 가장 멀리 나아갔던 칸(reached)까지 다시 나아간다.
+export const furthest = (player) => player.reached[player.floor] ?? player.progress
+
+export function backtrack(player, target) {
+  const to = Math.max(0, Math.min(target, furthest(player)))
+  if (to === player.progress) return { player, logs: [log('그럴 수 없다.', 'muted')], enemy: null }
+  const p = { ...player, progress: to }
+  const text = to < player.progress ? '왔던 길을 되짚어 입구까지 돌아왔다.' : '아는 길을 따라 지나왔던 곳까지 단숨에 나아갔다.'
+  return { player: p, logs: [log(text, 'muted'), ...sightLogs(p)], enemy: null }
 }
 
-// 계단을 올라 다음 층으로 간다. 새 층은 이정표를 다시 찾아야 한다.
-export function climb(player) {
-  const next = {
-    ...player,
-    floor: player.floor + 1,
-    progress: 0,
-    rests: config.restsPerFloor,
-    floorKnown: false,
-    dangerStreak: 0,
+// 별관(wing 층)으로 들어오는 문: 어느 층의 몇 번째 방인지. 별관끼리 이어져 있어도(보안실 → 서/남/북) 문은 하나뿐이다.
+export function wingEntrance(floorIndex) {
+  for (const [fi, f] of floors.entries()) {
+    const roomIndex = f.rooms.findIndex((r) => r.kind === 'wing' && r.enterFloor === floorIndex)
+    if (roomIndex !== -1) return { floor: fi, roomIndex }
   }
+  return null
+}
+
+// 별관의 입구나 끝에서 그 별관으로 들어온 문 앞으로 돌아간다. 문은 계속 열려 있어 언제든 다시 들어올 수 있다.
+export function returnFromWing(player) {
+  const { floor, roomIndex } = wingEntrance(player.floor)
+  const door = getFloor({ ...player, floor }).rooms[roomIndex]
+  const next = moveTo(player, floor, door.at)
+  return { player: next, logs: [log('철문을 지나 온 길로 돌아나왔다.', 'muted'), ...floorLogs(next), ...sightLogs(next)], enemy: null }
+}
+
+// 계단을 올라 다음 층으로 간다. 처음 오는 층은 이정표를 다시 찾아야 한다.
+export function climb(player) {
+  const next = moveTo(player, player.floor + 1, 0)
   return { player: next, logs: [log('계단을 오른다.', 'muted'), ...floorLogs(next)], enemy: null }
+}
+
+// 입구의 계단을 내려가 아래층으로 되돌아간다. 아래층의 위로 오르는 계단(끝 칸) 앞에 선다.
+export const canDescend = (player) => player.progress === 0 && player.floor > 0 && !getFloor(player).wing
+
+export function descend(player) {
+  if (!canDescend(player)) return { player, logs: [log('내려갈 계단이 없다.', 'muted')], enemy: null }
+  const below = player.floor - 1
+  const next = moveTo(player, below, floors[below].length)
+  return { player: next, logs: [log('계단을 내려간다.', 'muted'), ...floorLogs(next), ...sightLogs(next)], enemy: null }
 }

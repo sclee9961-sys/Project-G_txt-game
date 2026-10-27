@@ -189,20 +189,24 @@ describe('App 플레이 흐름', () => {
     click('눈을 뜬다')
     click('주변을 둘러본다')
     // 복도 모양은 판마다 무작위라, 지도에서 @ 바로 옆의 통로 글자를 찾아 그 방향키를 쓴다.
-    const forwardKey = () => {
+    // cameFrom: 방금 지나온 칸의 방향키. 그 칸도 @ 옆의 통로 글자라서 빼고 찾는다.
+    const forwardKey = (cameFrom = null) => {
       const lines = document.querySelector('.map-grid').textContent.split('\n')
       const y = lines.findIndex((row) => row.includes('@'))
       const x = lines[y].indexOf('@')
       const s = floors[0].theme.symbol
-      if (lines[y][x + 1] === s) return { press: 'ArrowRight', back: 'ArrowLeft' }
-      if (lines[y][x - 1] === s) return { press: 'ArrowLeft', back: 'ArrowRight' }
-      if (lines[y + 1]?.[x] === s) return { press: 'ArrowDown', back: 'ArrowUp' }
-      return { press: 'ArrowUp', back: 'ArrowDown' }
+      const candidates = [
+        { press: 'ArrowRight', back: 'ArrowLeft', cell: lines[y][x + 1] },
+        { press: 'ArrowLeft', back: 'ArrowRight', cell: lines[y][x - 1] },
+        { press: 'ArrowDown', back: 'ArrowUp', cell: lines[y + 1]?.[x] },
+        { press: 'ArrowUp', back: 'ArrowDown', cell: lines[y - 1]?.[x] },
+      ]
+      return candidates.find((c) => c.cell === s && c.press !== cameFrom)
     }
     const first = forwardKey()
     fireEvent.keyDown(window, { key: first.press })
     expect(screen.getByRole('img', { name: /\?\?\?, 1 \/ 26칸/ })).not.toBeNull()
-    const second = forwardKey() // 2칸째에서 이정표를 찾는다
+    const second = forwardKey(first.back) // 2칸째에서 이정표를 찾는다
     fireEvent.keyDown(window, { key: second.press })
     expect(screen.getByRole('img', { name: /지하 10층, 2 \/ 26칸/ })).not.toBeNull()
     // 왔던 방향으로 물러난다
@@ -484,7 +488,7 @@ describe('App 플레이 흐름', () => {
     expect(screen.getByRole('img', { name: new RegExp(`${gate.at} / ${floors[gateFloor].length}칸`) })).not.toBeNull()
   })
 
-  it('별관 통로는 비밀번호를 맞혀야 열리고, 열리면 별관으로 넘어갔다가 끝에서 돌아올 수 있다', () => {
+  it('별관 통로는 비밀번호를 맞혀야 열리고, 열리면 별관으로 넘어갔다가 끝에서 돌아온 뒤에도 다시 드나들 수 있다', () => {
     fixRandom(0) // 별일 없이 나아간다
     const wingFloor = floors.findIndex((f) => f.rooms.some((r) => r.kind === 'wing'))
     const room = floors[wingFloor].rooms.find((r) => r.kind === 'wing')
@@ -518,9 +522,51 @@ describe('App 플레이 흐름', () => {
     expect(button('온 길을 되짚어 돌아간다')).not.toBeNull()
 
     click('온 길을 되짚어 돌아간다')
-    expect(text(/되짚어 돌아왔다/)).not.toBeNull()
+    expect(text(/온 길로 돌아나왔다/)).not.toBeNull()
     expect(screen.getByRole('img', { name: new RegExp(`${room.at} / ${floors[wingFloor].length}칸`) })).not.toBeNull()
-    expect(button(`${room.name}에 들어간다`)).toBeNull() // 이미 다녀온 문이라 다시 나타나지 않는다
+
+    // 연 문은 계속 열려 있다: 비밀번호 없이 곧장 다시 들어가고, 별관 입구에서 철문으로 돌아나올 수도 있다.
+    click(`${room.name}에 들어간다`)
+    expect(screen.queryByLabelText('비밀번호')).toBeNull()
+    expect(text(/열어 둔 .* 지나간다/)).not.toBeNull()
+    expect(text(`${wingFloorData.name} · ${wingFloorData.place}`)).not.toBeNull() // 이미 이정표를 본 별관이다
+    click('철문으로 돌아나간다')
+    expect(screen.getByRole('img', { name: new RegExp(`${room.at} / ${floors[wingFloor].length}칸`) })).not.toBeNull()
+  })
+
+  it('입구에서 계단을 내려가 지나온 층으로 되돌아가고, 지나온 길은 한 번에 오갈 수 있다', () => {
+    fixRandom(0)
+    const reached = { 0: floors[0].length, 1: floors[1].length, 2: 0 }
+    continueFromSave({ floor: 2, progress: 0, reached })
+    expect(button('입구까지 되짚어 간다')).toBeNull() // 이미 입구다
+
+    click('계단을 내려간다')
+    expect(text(`${floors[1].name} · ${floors[1].place}`)).not.toBeNull()
+    expect(screen.getByRole('img', { name: new RegExp(`${floors[1].length} / ${floors[1].length}칸`) })).not.toBeNull()
+    expect(button('계단을 오른다')).not.toBeNull()
+
+    click('입구까지 되짚어 간다')
+    expect(screen.getByRole('img', { name: new RegExp(`0 / ${floors[1].length}칸`) })).not.toBeNull()
+    click(`지나왔던 곳까지 나아간다 \\(${floors[1].length} / ${floors[1].length}칸\\)`)
+    click('계단을 오른다')
+    expect(text(`${floors[2].name} · ${floors[2].place}`)).toBeNull() // 지하 8층은 아직 이정표를 못 봤다
+  })
+
+  it('열쇠로 여는 문은 열쇠가 없으면 무엇이 필요한지만 알리고, 열쇠가 있으면 살펴보는 순간 열린다', () => {
+    const floor = floors.findIndex((f) => f.gate?.key === 'cutter')
+    const gate = floors[floor].gate
+    continueFromSave({ floor, progress: gate.at - 1, hp: 30 })
+    click('잠긴 문을 살펴본다')
+    expect(text(/다른 곳에서 방법을 찾아야 한다/)).not.toBeNull()
+    expect(screen.queryByLabelText('비밀번호')).toBeNull()
+    expect(button('잠긴 문을 살펴본다')).not.toBeNull() // 여전히 막혀 있다
+    cleanup()
+    localStorage.clear()
+
+    continueFromSave({ floor, progress: gate.at - 1, inventory: { cutter: 1 } })
+    click('잠긴 문을 살펴본다')
+    expect(text(gate.openText[0])).not.toBeNull()
+    expect(button('전진')).not.toBeNull()
   })
 
   it('실험실에 들어가면 장비를 얻고, 장착 여부를 물은 뒤 guards 중 하나와 싸운다', () => {

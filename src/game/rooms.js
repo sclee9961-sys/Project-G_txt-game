@@ -4,7 +4,7 @@
 // 대신 방 전용 화면으로 넘어가고, 그 안에서 직접 행동을 골라야(쉰다/치료받는다/쪽지를 읽는다/아이템을 챙긴다) 효과가 적용된다.
 // 단말실은 그 화면이 접속 폼이고, 나머지 넷(ROOM_SCREENS)은 이 화면(useGame의 'room')으로 넘어간다.
 // 실험실(lab)·매복(ambush)·막다른 길(dead)은 예전처럼 문을 지나자마자 곧장 결과가 나온다.
-import { addItem, fillNote, gain, spawnEnemy } from './character.js'
+import { addItem, fillNote, gain, itemCount, moveTo, spawnEnemy } from './character.js'
 import { config } from './config.js'
 import { floors, items as itemData } from './data.js'
 import { getFloor } from './mapgen.js'
@@ -18,15 +18,16 @@ export const floorRooms = (player) => getFloor(player).rooms
 export const isVisited = (player, index) => player.visited.includes(roomKey(player.floor, index))
 
 // 지금 들어갈 수 있는 방. 문을 이미 발견했고(진행도가 문 위치 이상) 아직 안 가 본 방이다.
+// 별관 통로(wing)만은 예외로, 한 번 연 뒤에도 계속 열려 있어 언제든 다시 드나들 수 있다.
 export function availableRooms(player) {
   return floorRooms(player)
     .map((room, index) => ({ room, index }))
-    .filter(({ room, index }) => player.progress >= room.at && !isVisited(player, index))
+    .filter(({ room, index }) => player.progress >= room.at && (room.kind === 'wing' || !isVisited(player, index)))
 }
 
-// 방금 문 앞에 도착했을 때 알려주는 로그. 같은 at에 방이 두 개면 갈림길로 안내한다.
+// 방금 문 앞에 도착했을 때 알려주는 로그. 같은 at에 방이 두 개면 갈림길로 안내한다. (이미 연 별관 통로는 다시 알리지 않는다)
 export function doorLogs(player) {
-  const here = availableRooms(player).filter(({ room }) => room.at === player.progress)
+  const here = availableRooms(player).filter(({ room, index }) => room.at === player.progress && !isVisited(player, index))
   if (here.length >= 2) return [log('길이 두 갈래로 갈라진다.', 'event')]
   return here.map(({ room }) => log(`곁길이 보인다. 문패: ${room.name}`, 'event'))
 }
@@ -76,17 +77,38 @@ const effects = {
   },
 }
 
+// 별관 통로 문을 지나 그 별관의 입구로 넘어간다. 문은 연 것으로 기록되어(visited) 그 뒤로는 그냥 드나든다.
+// 돌아올 자리는 따로 기억하지 않는다 — 별관마다 들어오는 문이 하나뿐이라 explore.js의 wingEntrance가 찾아 준다.
+function passWing(player, room, index) {
+  const opened = isVisited(player, index) ? player : { ...player, visited: [...player.visited, roomKey(player.floor, index)] }
+  return moveTo(opened, room.enterFloor, 0)
+}
+
 export function enterRoom(player, index, rng = Math.random) {
   const room = floorRooms(player)[index]
-  if (!room || isVisited(player, index) || player.progress < room.at) {
+  const reopenable = room?.kind === 'wing'
+  if (!room || (isVisited(player, index) && !reopenable) || player.progress < room.at) {
     return { player, logs: [log('그곳으로 갈 수 없다.', 'muted')], enemy: null }
   }
+
+  // 이미 연 별관 통로: 빛을 들이지 않고 곧장 지나간다.
+  if (room.kind === 'wing' && isVisited(player, index)) {
+    return { player: passWing(player, room, index), logs: [log(`열어 둔 ${josa(room.name, '을/를')} 지나간다.`, 'muted')], enemy: null, travel: true }
+  }
+
   const walked = { ...player, light: Math.max(0, player.light - config.roomLight) }
   const logs = room.text.map((t) => log(t))
 
   // 단말실은 접속에 성공해야 소진된다. 지금은 접속 화면으로 이어질 뿐이다.
   if (room.kind === 'terminal') return { player: walked, logs, enemy: null, terminal: true }
-  // 별관 통로도 마찬가지로, 비밀번호를 맞혀야 소진된다. 지금은 잠긴 문 화면으로 이어질 뿐이다.
+  // 열쇠로 여는 별관 통로: 열쇠가 있으면 곧장 열고 넘어가고, 없으면 문 앞에서 돌아선다(문은 그대로 남는다).
+  if (room.kind === 'wing' && room.key) {
+    if (itemCount(walked, room.key) < 1) {
+      return { player: walked, logs: [...logs, ...(room.lockedText ?? []).map((t) => log(t, 'muted'))], enemy: null }
+    }
+    return { player: passWing(walked, room, index), logs: [...logs, ...room.openText.map((t) => log(t, 'good'))], enemy: null, travel: true }
+  }
+  // 비밀번호로 여는 별관 통로도 단말실처럼, 맞혀야 열린다. 지금은 잠긴 문 화면으로 이어질 뿐이다.
   if (room.kind === 'wing') return { player: walked, logs, enemy: null, wing: true }
 
   const consumed = { ...walked, visited: [...walked.visited, roomKey(player.floor, index)] }
@@ -171,10 +193,10 @@ export function login(player, index, id, password) {
 }
 
 // 별관 통로 문을 열어 본다. 반환값: { player, logs, ok }
-// 맞으면 그 자리를 기억해 두고(branchReturn) 곧장 별관(room.enterFloor)으로 넘어간다. 틀리면 gate처럼 체력이 깎인다.
+// 맞으면 곧장 별관(room.enterFloor)으로 넘어간다. 틀리면 gate처럼 체력이 깎인다.
 export function openWing(player, index, password, rng = Math.random) {
   const room = floorRooms(player)[index]
-  if (!room || room.kind !== 'wing' || isVisited(player, index) || player.progress < room.at) {
+  if (!room || room.kind !== 'wing' || room.key || isVisited(player, index) || player.progress < room.at) {
     return { player, logs: [log('그럴 수 없다.', 'muted')], ok: false }
   }
   if (normalizeCode(password) !== normalizeCode(player.passwords[room.passwordIndex])) {
@@ -186,17 +208,7 @@ export function openWing(player, index, password, rng = Math.random) {
       ok: false,
     }
   }
-  const visited = { ...player, visited: [...player.visited, roomKey(player.floor, index)] }
-  const next = {
-    ...visited,
-    floor: room.enterFloor,
-    progress: 0,
-    floorKnown: false,
-    rests: config.restsPerFloor,
-    dangerStreak: 0,
-    branchReturn: { floor: player.floor, progress: room.at },
-  }
-  return { player: next, logs: room.openText.map((t) => log(t, 'good')), ok: true }
+  return { player: passWing(player, room, index), logs: room.openText.map((t) => log(t, 'good')), ok: true }
 }
 
 // 수첩을 펼쳤을 때 보여줄 로그. 읽은 쪽지를 층과 방별로 모아서 보여준다.
