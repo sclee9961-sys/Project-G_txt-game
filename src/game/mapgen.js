@@ -10,6 +10,7 @@ const STEP = { R: [1, 0], L: [-1, 0], D: [0, 1], U: [0, -1] }
 const GATE_NODE = '__gate__'
 const MAX_FLOOR_ATTEMPTS = 50
 const MAX_PATH_ATTEMPTS = 300
+const MAX_PLACEMENT_ATTEMPTS = 30
 
 // map.js의 mapGridSize와 같은 공식이다. 순환 참조(map.js → mapgen.js)를 피하려고 여기 따로 둔다.
 const gridSize = (floorIndex) => 50 + Math.floor(floorIndex / 3) * 11
@@ -47,15 +48,26 @@ function sampleSorted(lo, hi, n, rng) {
   return pool.slice(0, n).sort((a, b) => a - b)
 }
 
+const cellKey = (c) => `${c.x},${c.y}`
+const neighbors = (c) => DIRS.map((d) => ({ x: c.x + STEP[d][0], y: c.y + STEP[d][1] }))
+
+// 백트래킹이 막다른 나선에 갇혀 너무 오래 헤매면 이번 시도는 버리고 처음부터 다시 뽑는다.
+const MAX_WALK_MOVES = 20000
+
 // 자기 자신과 겹치지 않는 길이 length짜리 경로를 백트래킹 랜덤워크로 한 번 만들어 본다. 막히면 null.
+// 겹치지 않는 것에 더해, 바로 앞 칸이 아닌 지나온 칸과 상하좌우로 맞닿지도 않게 한다. 지도는 칸 단위로 그려서
+// 맞닿은 두 칸 사이에 벽을 그릴 수 없으므로, 맞닿으면 실제로는 갈 수 없는 지름길이 이어진 길처럼 보이기 때문이다.
 function attemptWalk(length, rng) {
   const cells = [{ x: 0, y: 0 }]
   const seen = new Set(['0,0'])
   const path = []
   const choices = [shuffle(DIRS, rng)]
   let i = 0
+  let moves = 0
 
   while (i < length) {
+    moves += 1
+    if (moves > MAX_WALK_MOVES) return null
     if (choices[i].length === 0) {
       if (i === 0) return null
       choices.pop()
@@ -69,8 +81,9 @@ function attemptWalk(length, rng) {
     const last = cells[i]
     const [dx, dy] = STEP[dir]
     const next = { x: last.x + dx, y: last.y + dy }
-    const key = `${next.x},${next.y}`
+    const key = cellKey(next)
     if (seen.has(key)) continue
+    if (neighbors(next).some((n) => (n.x !== last.x || n.y !== last.y) && seen.has(cellKey(n)))) continue
     seen.add(key)
     cells.push(next)
     path.push(dir)
@@ -219,20 +232,22 @@ function assignPositions(order, length, gateAt, rng) {
 
 // 그룹마다 새 at 칸을 기준으로, 복도나 이미 배치된 다른 방과 안 겹치는 방향을 무작위로 골라 준다.
 // 포크(같은 at를 쓰는 방 여럿)는 먼저 배치된 방의 칸도 충돌 검사에 들어가므로 자연히 서로 다른 방향을 받는다.
+// 방 칸은 자기 문이 난 칸(from) 말고는 복도나 다른 방과 상하좌우로 맞닿지 않게 한다 — 맞닿으면 다른 칸에서도
+// 그 방으로 들어갈 수 있는 것처럼 보인다(attemptWalk의 맞닿음 금지와 같은 이유).
 function assignDirections(cells, groups, positions, rng) {
-  const occupied = new Set(cells.map((c) => `${c.x},${c.y}`))
+  const occupied = new Set(cells.map(cellKey))
   const dirs = new Map()
   for (const group of groups) {
     const from = cells[positions.get(group.at)]
     const order = shuffle(DIRS, rng)
     for (const roomIndex of group.indices) {
       const dir = order.find((d) => {
-        const [dx, dy] = STEP[d]
-        return !occupied.has(`${from.x + dx},${from.y + dy}`)
+        const cell = { x: from.x + STEP[d][0], y: from.y + STEP[d][1] }
+        if (occupied.has(cellKey(cell))) return false
+        return !neighbors(cell).some((n) => (n.x !== from.x || n.y !== from.y) && occupied.has(cellKey(n)))
       })
       if (!dir) return null
-      const [dx, dy] = STEP[dir]
-      occupied.add(`${from.x + dx},${from.y + dy}`)
+      occupied.add(cellKey({ x: from.x + STEP[dir][0], y: from.y + STEP[dir][1] }))
       dirs.set(roomIndex, dir)
     }
   }
@@ -248,14 +263,19 @@ function generateFloorLayout(floor, floorIndex, rng) {
   for (let attempt = 0; attempt < MAX_FLOOR_ATTEMPTS; attempt += 1) {
     const path = generateSelfAvoidingPath(floor.length, floorIndex, rng)
     if (!path) continue
-    const order = randomTopoOrder(nodeIds, edges, rng)
-    if (!order) return null // 순환 의존 — 구조적인 문제라 다시 시도해도 소용없다
-    const positions = assignPositions(order, floor.length, floor.gate?.at, rng)
-    if (!positions) continue
-    const dirs = assignDirections(pathCells(path), groups, positions, rng)
-    if (!dirs) continue
-    const rooms = floor.rooms.map((room, index) => ({ at: positions.get(room.at), dir: dirs.get(index) }))
-    return { path, rooms }
+    const cells = pathCells(path)
+    // 복도 하나에 방 순서·자리를 여러 번 뽑아 본다. 잠긴 문이 끝에 가깝거나(문 뒤에 자리가 없다) 짧은 층에 방이
+    // 많으면(맞닿지 않는 자리가 모자라다) 한 번에 맞는 배치가 잘 안 나오는데, 복도를 매번 새로 만들 필요는 없다.
+    for (let placement = 0; placement < MAX_PLACEMENT_ATTEMPTS; placement += 1) {
+      const order = randomTopoOrder(nodeIds, edges, rng)
+      if (!order) return null // 순환 의존 — 구조적인 문제라 다시 시도해도 소용없다
+      const positions = assignPositions(order, floor.length, floor.gate?.at, rng)
+      if (!positions) continue
+      const dirs = assignDirections(cells, groups, positions, rng)
+      if (!dirs) continue
+      const rooms = floor.rooms.map((room, index) => ({ at: positions.get(room.at), dir: dirs.get(index) }))
+      return { path, rooms }
+    }
   }
   return null
 }

@@ -84,7 +84,8 @@ export function InventoryBox({ player }) {
       {list.map((item) => {
         const isGear = item.type === 'weapon' || item.type === 'armor' || item.type === 'aug'
         const label = isGear && item.equipped ? `${item.name} (${item.type === 'aug' ? '이식' : '장착'})` : item.name
-        return <Row key={item.id} label={label} value={isGear ? item.description : item.count} />
+        // 장비와 진행 열쇠는 하나만 가지므로 개수 대신 무엇에 쓰는지를 보여준다.
+        return <Row key={item.id} label={label} value={isGear || item.type === 'key' ? item.description : item.count} />
       })}
     </Box>
   )

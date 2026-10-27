@@ -1,7 +1,8 @@
 // 게임 데이터. 아이템 / 적 / 방 / 층을 추가하려면 여기에 항목만 늘리면 됩니다.
 
 // type: heal(체력 회복) | light(손전등 충전) | vitality(최대 체력 영구 증가) | weapon(공격 +value) | armor(방어 +value) | material(조합 재료)
-// 무기와 방어구는 장착한 하나만 적용된다(character.js의 equip). 소모품·재료·vitality는 소지품 용량을 차지하지만, 장비는 차지하지 않는다.
+//       | key(진행 열쇠: 잠긴 문(gate.key)이나 별관 통로(room.key)를 연다. 쓰이지 않고 계속 남는다)
+// 무기와 방어구는 장착한 하나만 적용된다(character.js의 equip). 소모품·재료·vitality는 소지품 용량을 차지하지만, 장비와 열쇠는 차지하지 않는다.
 export const items = {
   bandage: { name: '붕대', type: 'heal', value: 20, useText: '붕대로 상처를 동여맸다.', description: '체력 +20' },
   canned: { name: '통조림', type: 'heal', value: 12, useText: '식은 통조림을 억지로 삼켰다.', description: '체력 +12' },
@@ -22,6 +23,11 @@ export const items = {
   overalls: { name: '두꺼운 작업복', type: 'armor', value: 2, description: '방어 +2' },
   vest: { name: '방폭 조끼', type: 'armor', value: 4, description: '방어 +4' },
   suit: { name: '방호복', type: 'armor', value: 6, description: '방어 +6' },
+  // 진행 열쇠: 별관과 본편 위층을 오가며 하나씩 얻는다. 서쪽 별관 → 지하 2층 → 북쪽 별관(남쪽 별관의 해독기 필요) → 지하 1층.
+  cutter: { name: '유압 절단기', type: 'key', description: '굵은 쇠사슬도 끊어 낸다' },
+  decoder: { name: '신호 해독기', type: 'key', description: '신호로 잠긴 문을 푼다' },
+  hangarPass: { name: '격납고 출입증', type: 'key', description: '북쪽 별관 출입 권한' },
+  exitKey: { name: '출구 제어 키', type: 'key', description: '출구 격벽을 연다' },
   // 이식(aug): 별관 안쪽 개조실에서만 얻는 보조도구. 무기·방어구와 달리 하나만 고르는 게 아니라 여러 개를 동시에 몸에 지닐 수 있다.
   // stat은 어느 전투 능력치에 더해지는지(attack/defense), corruption은 장착했을 때 쌓이는 변질도다. character.js의 corruptionOf 참고.
   neuralBooster: {
@@ -249,9 +255,10 @@ export const enemies = {
 //           입력하면 notes를 열람하고 방이 소진된다. 틀려도 다시 시도할 수 있다.
 //   dead    막다른 길. 얻는 것 없이 문장만 나온다.
 //   ambush  매복. 보상 없이 적(enemy)이 바로 나타난다.
-//   wing    다른 별관(floors의 다른 층)으로 이어지는 통로 문. passwordIndex가 가리키는 값을 맞게 입력해야 열리고,
-//           열리면 enterFloor가 가리키는 층으로 곧장 넘어간다(진행도 0부터, 이 방의 자리를 기억해 둔다).
-//           그 층 끝에 다다르면 돌아와 이 자리에서 이어간다. 틀리면 gate처럼 체력이 깎인다.
+//   wing    다른 별관(floors의 다른 층)으로 이어지는 통로 문. passwordIndex가 가리키는 값을 맞게 입력해야 열리고
+//           (틀리면 gate처럼 체력이 깎인다), passwordIndex 대신 key(아이템 id)가 있으면 그 열쇠를 가지고 있어야 열린다.
+//           열리면 enterFloor가 가리키는 층으로 곧장 넘어간다(진행도 0부터). 한 번 연 문은 계속 열려 있어 언제든 다시
+//           드나들 수 있고, 별관의 입구나 끝에서 돌아나오면 이 문 앞으로 돌아온다(explore.js의 wingEntrance).
 // 같은 at에 방이 두 개 있으면 갈림길로 취급되어, "길이 두 갈래로 갈라진다"로 한 번에 안내된다.
 // 방은 순서 상관없이 아무 때나(막다른 길이어도 되돌아와서) 다른 쪽에 들어갈 수 있다.
 export const roomKinds = {
@@ -277,10 +284,12 @@ export const roomKinds = {
 // 층 끝까지 잇는 통로 자체를 막는 잠긴 문. rooms(곁길)와 달리 열지 않으면 그 너머로 나아갈 수 없다.
 //   at            문이 걸려 있는 지점. progress가 (at - 1)에 닿으면 문이 보이고, 열기 전까지 그 너머로 못 간다.
 //   passwordIndex 문을 여는 값이 player.passwords의 몇 번째인지 (대소문자, 하이픈, 공백 무시하고 비교한다)
+//   key           passwordIndex 대신 쓰는 진행 열쇠(아이템 id). 그 열쇠를 가지고 문을 살펴보면 열린다.
+//                 다른 곳(주로 별관)에서 얻는 열쇠라, 메트로베니아식으로 되돌아가 열게 된다.
 //   text          문 앞에 섰을 때 보여줄 문장 (열기 전, 매번)
-//   openText      올바른 값을 넣었을 때 보여줄 문장
+//   openText      올바른 값을 넣었을 때(또는 열쇠로 열었을 때) 보여줄 문장
 
-// 지하 10층에서 시작해 위로 올라간다. 마지막 층의 출구 문은 boss가 지킨다.
+// 지하 10층에서 시작해 위로 올라간다. 지나온 층으로는 계단을 내려가 언제든 되돌아갈 수 있다.
 // length: 계단(출구)을 찾기까지 나아가야 하는 걸음 수
 // path: 지도에 그려질 통로 모양. 한 글자가 한 걸음이고 R(오른쪽) D(아래) L(왼쪽) U(위)로 쓴다. 글자 수는 length와 같아야 하고 자기 자신과 겹치면 안 된다.
 // theme: 지도에서 길 칸(.)을 대신해 그릴 층 고유 글자와, 범례에 붙는 한 줄 설명. place(장소 이름)의 분위기에 맞춰 고른다.
@@ -832,7 +841,18 @@ export const floors = [
     ],
     enemies: ['subject', 'machine', 'observed'],
     loot: { bandage: 3, canned: 2, battery: 3 },
-    finds: [],
+    // 격리 셔터 너머에서 북쪽 별관 출입증을 얻는다. 그걸 들고 지하 4층 → 동쪽 별관(보안실)까지 되돌아가야 한다.
+    finds: [{ at: 40, item: 'hangarPass', text: '쓰러진 경비의 목에 출입증이 걸려 있다. "격납고 — 북쪽 별관". 풀어서 챙겼다.' }],
+    // 서쪽 별관에서 얻는 유압 절단기가 있어야 열린다.
+    gate: {
+      at: 20,
+      key: 'cutter',
+      text: [
+        '격리 셔터가 복도를 가로막고 있다. 손잡이마다 굵은 쇠사슬이 몇 겹으로 감겨 있다.',
+        '맨손으로는 꿈쩍도 하지 않는다. 사슬을 끊어 낼 도구가 필요하다.',
+      ],
+      openText: ['유압 절단기로 사슬을 하나씩 끊어 낸다. 마지막 사슬이 끊어지며 바닥에 떨어진다.', '셔터를 밀어 올리자 안쪽 격리 구역이 드러난다.'],
+    },
     rooms: [
       {
         at: 14,
@@ -908,6 +928,16 @@ export const floors = [
     enemies: ['ceiling', 'subject', 'machine', 'usher'],
     loot: { bandage: 3, canned: 2, battery: 3 },
     finds: [],
+    // 출구 바로 앞의 마지막 격벽. 북쪽 별관에서 얻는 출구 제어 키가 있어야 열린다.
+    gate: {
+      at: 47,
+      key: 'exitKey',
+      text: [
+        '출구 문 앞을 두꺼운 격벽이 한 겹 더 막고 있다. 가운데에 열쇠를 꽂는 자리가 하나 있다.',
+        '자리 옆에 작은 글자: "출구 제어 — 격납고 관리".',
+      ],
+      openText: ['제어 키를 꽂아 돌리자 격벽이 낮게 울리며 위로 말려 올라간다.', '그 너머에 묵직한 철문이 보인다.'],
+    },
     rooms: [
       {
         at: 27,
@@ -1014,7 +1044,7 @@ export const floors = [
           '이 시설에는 원래 네 개의 별관이 있었다고 한다 — 동, 서, 남, 북.',
           '[관리 메모] 보안실 안쪽 철문은 서쪽 별관으로 이어진다. 잠금 번호: {서별관}.',
           '[관리 메모] 보안실 안쪽 또 다른 철문은 남쪽 별관으로 이어진다. 잠금 번호: {남별관}.',
-          '[관리 메모] 보안실 안쪽 마지막 철문은 북쪽 별관으로 이어진다. 잠금 번호: {북별관}.',
+          '[관리 메모] 보안실 안쪽 마지막 철문은 북쪽 별관으로 이어진다. 번호 대신 격납고 출입증을 읽힌다. 출입증은 격리동 경비가 지닌다.',
         ],
         text: ['먼지 쌓인 책상 위에 관리 서류 몇 장이 남아 있다.'],
         searches: [
@@ -1076,15 +1106,16 @@ export const floors = [
         dir: 'U',
         kind: 'wing',
         name: '북쪽 별관으로 이어지는 철문',
-        passwordIndex: 4,
+        key: 'hangarPass',
         enterFloor: 13,
         text: [
           '보안실 안쪽 깊숙이, 낯선 철문이 하나 있다. 이 별관 도면에는 없던 문이다.',
-          '손잡이 옆에 작은 잠금장치가 붙어 있다. 네 자리 번호가 필요해 보인다.',
+          '손잡이 옆에 카드 판독기가 붙어 있다. 번호를 누르는 자리는 없다.',
         ],
+        lockedText: ['판독기에 붉은 불이 깜빡인다. 출입증이 있어야 열릴 것 같다.'],
         openText: [
-          '녹슨 잠금장치가 낮은 소리를 내며 풀린다.',
-          '문 너머로 낯선 통로가 이어진다. 지금까지와는 다른 공기다.',
+          '출입증을 판독기에 대자 짧은 신호음과 함께 잠금이 풀린다.',
+          '문 너머로 천장이 높은 통로가 이어진다. 지금까지와는 다른 공기다.',
         ],
       },
     ],
@@ -1106,7 +1137,7 @@ export const floors = [
     ],
     enemies: ['scratcher', 'machine', 'craneThing'],
     loot: { bandage: 2, battery: 2 },
-    finds: [],
+    finds: [{ at: 12, item: 'cutter', text: '자재 더미 사이에 유압 절단기 한 대가 기대 세워져 있다. 아직 쓸 만하다. 챙겼다.' }],
     rooms: [
       {
         at: 3,
@@ -1129,6 +1160,7 @@ export const floors = [
         notes: [
           '반출 기록마다 목적지가 "다음 칸"으로만 적혀 있다.',
           '[반출 기록] 이번 열차 편성에는 새 칸이 이어 붙을 예정이라고 한다. 이름은 아직 적혀 있지 않다.',
+          '[반출 기록] 유압 절단기 1대 — 격리동 셔터 사슬 작업용. 반출 보류, 창고 안쪽에 둠.',
         ],
         text: ['녹슨 캐비닛 속에 반출 기록철이 가득하다.'],
         searches: [
@@ -1169,7 +1201,7 @@ export const floors = [
     ],
     enemies: ['worker', 'subject', 'staticThing'],
     loot: { bandage: 2, battery: 2 },
-    finds: [],
+    finds: [{ at: 12, item: 'decoder', text: '꺼지지 않은 장비 선반에 손바닥만 한 신호 해독기가 꽂혀 있다. 뽑아서 챙겼다.' }],
     rooms: [
       {
         at: 3,
@@ -1192,6 +1224,7 @@ export const floors = [
         notes: [
           '수신 기록 대부분은 잡음뿐이다. 몇 장만 글자를 알아볼 수 있다.',
           '[수신 기록] "…다음 칸 준비 완료. 열차는 멈추지 않는다…" 이후는 잡음.',
+          '[장비 대장] 신호 해독기 — 격납고 안쪽 문 해제용. 통신실 선반에 꽂아 둘 것.',
         ],
         text: ['책상 위에 수신 기록지 몇 장이 가지런히 놓여 있다.'],
         searches: [
@@ -1232,7 +1265,14 @@ export const floors = [
     ],
     enemies: ['machine', 'ceiling', 'railThing'],
     loot: { bandage: 2, battery: 2 },
-    finds: [],
+    finds: [{ at: 13, item: 'exitKey', text: '격납고 맨 안쪽 제어반에 열쇠 하나가 꽂힌 채 남아 있다. 손잡이에 "출구 제어". 뽑아서 챙겼다.' }],
+    // 격납고 안쪽은 신호로 잠겨 있다. 남쪽 별관(통신실)의 신호 해독기가 있어야 열린다.
+    gate: {
+      at: 7,
+      key: 'decoder',
+      text: ['격납고 안쪽으로 이어지는 문이 닫혀 있다. 손잡이 대신 신호 수신기만 붙어 있다.', '수신기에서 끊긴 신호음이 반복된다.'],
+      openText: ['해독기를 수신기에 대자 신호음이 한 번 길게 울린다.', '문이 옆으로 미끄러져 열린다.'],
+    },
     rooms: [
       {
         at: 3,
@@ -1255,6 +1295,7 @@ export const floors = [
         notes: [
           '편성표 구석에 작게 적힌 글자: "무한 편성. 종착역 없음."',
           '[격납고 일지] 이 칸이 실려 나간 뒤로 새 칸이 다시 들어온 적은 없다.',
+          '[격납고 일지] 출구 격벽 제어 키는 격납고 맨 안쪽 제어반에서 관리한다.',
         ],
         text: ['관리실 책상 위에 편성표 사본이 남아 있다.'],
         searches: [

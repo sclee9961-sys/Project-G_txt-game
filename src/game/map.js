@@ -6,9 +6,12 @@ import { isVisited } from './rooms.js'
 
 const STEP = { R: [1, 0], L: [-1, 0], D: [0, 1], U: [0, -1] }
 
-// 지나온 칸(0번째부터 지금까지)마다 상하좌우 1칸(체비쇼프 거리 1, 3x3)씩 본 것으로 친다.
-// 한 번 본 곳은 다시 가려지지 않는다 — 지나온 길 전체가 계속 보인다.
+// 지나온 칸(0번째부터 이 층에서 가장 멀리 나아간 칸까지)마다 상하좌우 1칸(체비쇼프 거리 1, 3x3)씩 본 것으로 친다.
+// 한 번 본 곳은 다시 가려지지 않는다 — 물러나거나 다른 층에 다녀와도 지나온 길 전체가 계속 보인다.
 const VIEW_RADIUS = 1
+
+// 이 층에서 본 적 있는 가장 먼 칸 (player.reached와 지금 위치 중 더 먼 쪽)
+const seenUpTo = (player) => Math.max(player.reached?.[player.floor] ?? 0, player.progress)
 
 // 같은 at에 방이 두 개 이상이면 갈림길이다.
 const isFork = (floor, room) => floor.rooms.filter((r) => r.at === room.at).length >= 2
@@ -75,9 +78,10 @@ export function buildMap(player, roomIndex = null) {
   const { floor, cells, roomCells, width, height, at } = canvasLayout(player)
 
   const here = Math.min(Math.max(player.progress, 0), cells.length - 1)
+  const seen = Math.min(seenUpTo(player), cells.length - 1)
 
-  // 지나온 칸(0~here)마다의 3x3 반경을 합친 것이 "본 적 있는" 범위다.
-  const seenCenters = cells.slice(0, here + 1).map(at)
+  // 지나온 칸(0~seen)마다의 3x3 반경을 합친 것이 "본 적 있는" 범위다.
+  const seenCenters = cells.slice(0, seen + 1).map(at)
   const inView = (x, y) => seenCenters.some(([cx, cy]) => Math.max(Math.abs(x - cx), Math.abs(y - cy)) <= VIEW_RADIUS)
 
   const grid = Array.from({ length: height }, () => Array(width).fill(' '))
@@ -94,7 +98,7 @@ export function buildMap(player, roomIndex = null) {
 
   // 곁길 방: 문을 지나왔으면(한 번 발견했으면) 그 뒤로는 계속 그려진다.
   floor.rooms.forEach((room, i) => {
-    if (player.progress < room.at) return
+    if (seen < room.at) return
     const [x, y] = at(roomCells[i])
     const visited = isVisited(player, i)
     const symbol = roomKinds[room.kind].symbol
@@ -137,20 +141,17 @@ export function mapView(player, roomIndex = null) {
 // 지도 아래에 붙는 설명 줄들. 발견한 방의 종류만 알려주되, 안 가 본 갈림길은 무엇인지 알려주지 않는다.
 export function mapLegend(player) {
   const floor = getFloor(player)
+  const seen = seenUpTo(player)
   const lines = [`@ 현재 · ${floor.theme.symbol} ${floor.theme.label} · ^ 출구 · # 벽`]
-  const found = floor.rooms.filter(
-    (room, i) => player.progress >= room.at && (isVisited(player, i) || !isFork(floor, room)),
-  )
+  const found = floor.rooms.filter((room, i) => seen >= room.at && (isVisited(player, i) || !isFork(floor, room)))
   if (found.length) {
     const kinds = [...new Set(found.map((room) => room.kind))]
     lines.push(`${kinds.map((k) => `${roomKinds[k].symbol} ${roomKinds[k].name}`).join(' · ')} (소문자는 다녀온 곳)`)
   }
-  const hiddenFork = floor.rooms.some(
-    (room, i) => player.progress >= room.at && isFork(floor, room) && !isVisited(player, i),
-  )
+  const hiddenFork = floor.rooms.some((room, i) => seen >= room.at && isFork(floor, room) && !isVisited(player, i))
   if (hiddenFork) lines.push('? 안 가 본 갈림길 (들어가 봐야 무엇인지 압니다)')
-  if (floor.gate && player.progress >= floor.gate.at - 1 && !isGateOpen(player)) {
-    lines.push('# 잠긴 문 (비밀번호 필요)')
+  if (floor.gate && seen >= floor.gate.at - 1 && !isGateOpen(player)) {
+    lines.push(floor.gate.key ? '# 잠긴 문 (다른 곳에서 열 방법을 찾아야 함)' : '# 잠긴 문 (비밀번호 필요)')
   }
   return lines
 }

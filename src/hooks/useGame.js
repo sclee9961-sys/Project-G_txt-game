@@ -10,13 +10,29 @@ import {
   equip,
   itemCount,
   maxLightOf,
+  moveTo,
   subjectNumber,
   unequipAug,
 } from '../game/character.js'
 import { config } from '../game/config.js'
 import { floors } from '../game/data.js'
-import { atExit, climb, floorLogs, getFloor, isFinalFloor, rest, retreat, returnFromWing, sightLogs, step } from '../game/explore.js'
-import { atGate, tryGate } from '../game/gate.js'
+import {
+  atExit,
+  backtrack,
+  canDescend,
+  climb,
+  descend,
+  floorLogs,
+  furthest,
+  getFloor,
+  isFinalFloor,
+  rest,
+  retreat,
+  returnFromWing,
+  sightLogs,
+  step,
+} from '../game/explore.js'
+import { atGate, isKeyGate, tryGate, tryKeyGate } from '../game/gate.js'
 import { getItem, upgradeBag, upgradeLight, usableItems, useItem } from '../game/items.js'
 import { generateMapLayout } from '../game/mapgen.js'
 import {
@@ -182,12 +198,18 @@ export function useGame() {
     // 탐색
     walk: () => applyExplore(step(player)),
     retreat: () => applyExplore(retreat(player)),
+    // 메트로베니아식 되돌아가기: 입구까지 한 번에 물러나기 / 가장 멀리 갔던 곳까지 한 번에 나아가기 / 아래층으로 내려가기
+    backtrackToEntrance: () => applyExplore(backtrack(player, 0)),
+    backtrackToFurthest: () => applyExplore(backtrack(player, furthest(player))),
+    descend: () => applyExplore(descend(player)),
     rest: () => applyExplore(rest(player)),
     enterRoom: (index) => {
       const r = enterRoom(player, index)
       // 단말실은 접속 화면으로, 별관 통로는 잠긴 문 화면으로, 효과가 있는 방은 방 화면으로 넘어간다.
       if (r.terminal) return set({ player: r.player, screen: 'terminal', terminalRoom: index }, r.logs)
       if (r.wing) return set({ player: r.player, screen: 'gate', wingRoom: index }, r.logs)
+      // 이미 열었거나 열쇠로 연 별관 통로: 곧장 그 별관으로 넘어간다.
+      if (r.travel) return goExplore(r.player, [...r.logs, ...floorLogs(r.player)])
       if (r.room) return set({ player: r.player, screen: 'room', roomIndex: index, roomTaken: [], roomSearched: [] }, r.logs)
       applyExplore(r)
     },
@@ -229,7 +251,14 @@ export function useGame() {
 
     // 잠긴 문: 문 앞에서 비밀번호를 살펴보고 넣어 본다. 열리면 탐색으로 돌아온다. 틀리면 체력이 깎이고 문 앞에 남는다.
     // 별관 통로(wingRoom이 있을 때)는 열리면 그 별관으로 곧장 넘어간다.
-    openGate: () => set({ screen: 'gate', wingRoom: null }, getFloor(player).gate.text.map((t) => ({ text: t, type: 'event' }))),
+    // 열쇠로 여는 문(gate.key)은 입력 화면 없이, 살펴보는 순간 열리거나(열쇠가 있으면) 무엇이 필요한지 알려 준다.
+    openGate: () => {
+      if (isKeyGate(player)) {
+        const r = tryKeyGate(player)
+        return set({ player: r.player }, r.logs)
+      }
+      set({ screen: 'gate', wingRoom: null }, getFloor(player).gate.text.map((t) => ({ text: t, type: 'event' })))
+    },
     unlockGate: (password) => {
       if (game.wingRoom != null) {
         const r = openWing(player, game.wingRoom, password)
@@ -295,15 +324,7 @@ export function useGame() {
 
     // 테스트용: 층을 곧장 옮긴다 (개발 빌드에서만 UI에 노출된다).
     devJumpFloor: (floorIndex) => {
-      const next = {
-        ...player,
-        floor: floorIndex,
-        progress: 0,
-        rests: config.restsPerFloor,
-        floorKnown: true,
-        dangerStreak: 0,
-        branchReturn: null,
-      }
+      const next = { ...moveTo(player, floorIndex, 0), rests: config.restsPerFloor, floorKnown: true }
       goExplore(next, floorLogs(next))
     },
 
@@ -387,6 +408,7 @@ export function useGame() {
         const floor = getFloor(player)
         const forwardDir = floor.path[Math.min(player.progress, floor.path.length - 1)]
         const backDir = player.progress > 0 ? OPPOSITE[floor.path[player.progress - 1]] : null
+        const ahead = furthest(player)
         return [
           {
             ...(atExit(player)
@@ -402,6 +424,14 @@ export function useGame() {
           },
           // 입구까지 물러났으면 더 물러날 곳이 없다.
           ...(player.progress > 0 ? [{ label: '돌아간다', onClick: actions.retreat, dir: backDir }] : []),
+          // 입구에서는 아래층으로 내려가거나(본편), 들어온 철문으로 돌아나갈 수 있다(별관).
+          ...(canDescend(player) ? [{ label: '계단을 내려간다', onClick: actions.descend }] : []),
+          ...(floor.wing && player.progress === 0 ? [{ label: '철문으로 돌아나간다', onClick: actions.returnFromWing }] : []),
+          // 이미 지나온 길은 한 번에 오간다.
+          ...(player.progress > 1 ? [{ label: '입구까지 되짚어 간다', onClick: actions.backtrackToEntrance }] : []),
+          ...(ahead > player.progress + 1
+            ? [{ label: `지나왔던 곳까지 나아간다 (${ahead} / ${floor.length}칸)`, onClick: actions.backtrackToFurthest }]
+            : []),
           { label: `쉰다 (${player.rests})`, disabled: player.rests <= 0, onClick: actions.rest },
           { label: '소지품', onClick: actions.openInventory },
           // 쪽지를 하나라도 읽었을 때부터 나타난다.
